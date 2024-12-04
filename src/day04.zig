@@ -29,13 +29,49 @@ const Maze = struct {
     term: []u8,
     mert: []u8,
     alloc: Allocator,
+    as: List(Addr) = undefined,
 
     pub fn init(self: *Maze, buffer: *[]const u8, alloc: Allocator) void {
         self.buffer = buffer;
         self.line_len = indexOf(u8, buffer.*, '\n').?;
         self.line_count = buffer.len / (self.line_len + 1) + 1;
         self.alloc = alloc;
-        self.display();
+        // self.display();
+        self.as = List(Addr).init(alloc);
+    }
+
+    pub fn findAs(self: *Maze) void {
+        if (self.as.items.len > 0) {
+            return;
+        }
+        for (0..self.line_count) |y| {
+            for (0..self.line_len) |x| {
+                if (self.get(x, y) == 'A') {
+                    const a = Addr{ .x = x, .y = y };
+                    if (a.x < 1 or a.y < 1 or a.x + 1 > self.line_len or a.y + 1 > self.line_count) {
+                        continue;
+                    }
+                    self.as.append(a) catch unreachable;
+                }
+            }
+        }
+    }
+
+    pub fn findMases(self: *Maze) i32 {
+        self.findAs();
+        var c: i32 = 0;
+        for (self.as.items) |a| {
+            // top left to bottom right
+            const tl = self.get(a.x - 1, a.y - 1);
+            const br = self.get(a.x + 1, a.y + 1);
+            const tr = self.get(a.x + 1, a.y - 1);
+            const bl = self.get(a.x - 1, a.y + 1);
+            if (((tl == 'M' and br == 'S') or (tl == 'S' and br == 'M')) and ((tr == 'M' and bl == 'S') or (tr == 'S' and bl == 'M'))) {
+                c += 1;
+            }
+        }
+        self.as.deinit();
+        return c;
     }
 
     pub fn display(self: *Maze) void {
@@ -50,12 +86,11 @@ const Maze = struct {
 
     pub fn deinit(self: *Maze) void {
         self.alloc.destroy(self);
+        // self.as.deinit();
     }
 
     pub fn count(self: *Maze) i32 {
-        return (self.findHorizontal() +
-            self.findVertical() +
-            self.findDiagonal());
+        return self.findMases();
     }
 
     pub fn index(self: *Maze, x: usize, y: usize) usize {
@@ -64,9 +99,9 @@ const Maze = struct {
 
     pub fn _get(self: *Maze, i: usize) u8 {
         if (i >= self.buffer.len) {
-            print("ERR:{d} / {d}\n", .{ i, self.buffer.len });
-            unreachable;
-            // return 0;
+            // print("ERR:{d} / {d}\n", .{ i, self.buffer.len });
+            // unreachable;
+            return 0; // gross
         }
         return (self.buffer.*)[i];
     }
@@ -75,47 +110,10 @@ const Maze = struct {
         return self._get(self.index(x, y));
     }
 
-    pub fn findHorizontal(self: *Maze) i32 {
-        var c: i32 = 0;
-        for (0..self.line_count) |y| {
-            for (0..self.line_len - TERM_SIZE) |x| {
-                var string: [TERM_SIZE]u8 = undefined;
-                for (0..TERM_SIZE) |j| {
-                    string[j] = self.get(x + j, y);
-                }
-                if (eql(u8, &string, TERM) or eql(u8, &string, MERT)) {
-                    c += 1;
-                    print("## [{d},{d}] HORZ | <{s}>\n", .{ x, y, string });
-                }
-            }
-        }
-        return c;
-    }
-
-    pub fn findVertical(self: *Maze) i32 {
-        var c: i32 = 0;
-        for (0..self.line_count) |y| {
-            for (0..self.line_len) |x| {
-                var string: [TERM_SIZE]u8 = undefined;
-
-                for (0..TERM_SIZE) |j| {
-                    const by = (y + j) % self.line_count;
-                    string[j] = self.get(x, by);
-                }
-                if (eql(u8, &string, TERM) or eql(u8, &string, MERT)) {
-                    print("++ [{d},{d}] VERT | <{s}>\n", .{ x, y, string });
-                    c += 1;
-                }
-            }
-        }
-        return c;
-    }
-
     pub fn findDiagonal(self: *Maze) i32 {
         var c: i32 = 0;
         for (0..self.line_count - TERM_SIZE + 1) |y| {
             for (0..self.line_len - TERM_SIZE + 1) |x| {
-                // print("[x:{},y:{d}]", .{ x, y });
                 var d1: Word = undefined;
                 var d2: Word = undefined;
                 for (0..TERM_SIZE) |j| {
@@ -125,16 +123,9 @@ const Maze = struct {
 
                     d1[j] = self.get(bx, by);
                     d2[j] = self.get(cx, by);
-                    // print("D2 [[{s}]] _ x:{},y:{} +j:{} ->(bx:{} by:{}) // -> (cx:{d} )\n", .{ d2, x, y, j, bx, by, cx });
                 }
-                if (eql(u8, &d1, TERM) or eql(u8, &d1, MERT)) {
-                    // print("DIAG: >>{s} :: [{d},{d}]\n", .{ d1, x, y });
-                    c += 1;
-                }
-                if (eql(u8, &d2, TERM) or eql(u8, &d2, MERT)) {
-                    // print("DIAG: {s}<< :: [{d},{d}]\n", .{ d2, x, y });
-                    c += 1;
-                }
+                if (eql(u8, &d1, TERM) or eql(u8, &d1, MERT)) c += 1;
+                if (eql(u8, &d2, TERM) or eql(u8, &d2, MERT)) c += 1;
             }
         }
         return c;
@@ -147,7 +138,7 @@ pub fn main() void {
 
     var buf: []const u8 = (&raw_data[0..]).*;
     m.init(&buf, gpa);
-    m.display();
+    // m.display();
 
     print(">>  {d}\n\n", .{m.count()});
 }
@@ -166,30 +157,30 @@ pub fn stage1() void {
 //
 //
 const test_alloc = std.testing.allocator;
-// const SimpleSample = "1234567890\n!@#$%^&*()\nabcdefghij\n1234567890\nABCDEFGHIJ"[0..];
 
-// test "sample" {
-//     var m = test_alloc.create(Maze) catch unreachable;
-//     defer m.deinit();
-
-//     var buf: []const u8 = (&sample[0..]).*;
-//     m.init(&buf, test_alloc);
-
-//     try expectEq(5, m.findHorizontal());
-//     try expectEq(3, m.findVertical());
-//     try expectEq(10, m.findDiagonal());
-//     try expectEq(18, m.count());
-// }
-
-test "diags" {
+test "mases" {
     var m = test_alloc.create(Maze) catch unreachable;
     defer m.deinit();
 
-    var buf: []const u8 = (&diags[0..]).*;
+    var buf: []const u8 = (&mases[0..]).*;
     m.init(&buf, test_alloc);
+    const c = m.count();
 
-    try expectEq(4, m.findDiagonal());
+    print(">>  {d}\n\n", .{c});
+    try expectEq(4, m.findMases());
 }
+
+// test "mas" {
+//     var m = test_alloc.create(Maze) catch unreachable;
+//     defer m.deinit();
+
+//     var buf: []const u8 = (&mas[0..]).*;
+//     m.init(&buf, test_alloc);
+//     const c = m.count();
+
+//     print(">>  {d}\n\n", .{c});
+//     try expectEq(1, m.findMases());
+// }
 
 // Useful stdlib functions
 const tokenizeAny = std.mem.tokenizeAny;
@@ -249,4 +240,23 @@ var diags: []const u8 =
     \\.AA..
     \\.MM..
     \\XXXXX
+;
+
+var mases: []const u8 =
+    \\.M.S......
+    \\..A..MSMS.
+    \\.M.S.MAA..
+    \\..A.ASMSM.
+    \\.M.S.M....
+    \\..........
+    \\S.S.S.S.S.
+    \\.A.A.A.A..
+    \\M.M.M.M.M.
+    \\..........
+;
+
+var mas: []const u8 =
+    \\M.S
+    \\.A.
+    \\M.S
 ;
