@@ -11,263 +11,185 @@ const gpa = util.gpa;
 
 const raw_data = @embedFile("data/day04.txt");
 
-const term = "XMAS";
-const mert = "SAMX"; // todo
-
-const TERM_SIZE = term.len;
-const BORDER = TERM_SIZE / 2;
-
+const TERM = "XMAS";
+const MERT = "SAMX";
+const TERM_SIZE = 4;
 const Word = [TERM_SIZE]u8;
 const CellMatrix = [TERM_SIZE][TERM_SIZE]u8;
 
-const Window = struct {
-    cells: CellMatrix = undefined,
-    data: *Data,
-    start_x: usize,
-    start_y: usize,
-
-    pub fn init(self: *Window, data: *Data, x: usize, y: usize) void {
-        self.* = .{
-            .data = data,
-            .start_x = x,
-            .start_y = y,
-        };
-        for (self.start_y..self.start_y + TERM_SIZE, 0..) |ry, iy| {
-            for (self.start_x..self.start_x + TERM_SIZE, 0..) |rx, ix| {
-                self.cells[iy][ix] = self.getChar(rx, ry);
-            }
-        }
-    }
-
-    pub fn xyToIndex(self: *Window, x: usize, y: usize) usize {
-        const d = self.data;
-        const width = d.line_len;
-        return (y * (width + 1)) + x;
-    }
-
-    fn getChar(self: *Window, x: usize, y: usize) u8 {
-        const i = self.xyToIndex(x, y);
-        if (i >= self.data.buffer.len) return '?';
-        return (self.data.buffer.*)[i];
-    }
-
-    pub fn display(self: *Window) void {
-        for (self.cells) |ys| {
-            for (ys) |ch| {
-                print("{c}", .{ch});
-            }
-            print(" :: [{d},{d}]\n", .{ self.start_x, self.start_y });
-        }
-        print("\n", .{});
-    }
-
-    pub fn countMatches(self: *const Window) i32 {
-        return countHorz(self.cells) + countVert(self.cells) + countDiag(self.cells);
-    }
-
-    pub fn countHorz(cells: CellMatrix) i32 {
-        var c: i32 = 0;
-        for (cells) |ys| {
-            if (eql(u8, &ys, term) or eql(u8, &ys, mert)) c += 1;
-        }
-        return c;
-    }
-
-    pub fn countVert(cells: CellMatrix) i32 {
-        var sllec: CellMatrix = undefined;
-        for (cells, 0..) |ys, iy| {
-            for (ys, 0..) |x, ix| {
-                sllec[ix][iy] = x;
-            }
-        }
-        return countHorz(sllec);
-    }
-
-    fn countDiag(cells: CellMatrix) i32 {
-        var c: i32 = 0;
-        var ds: [2]Word = undefined;
-        for (0..cells.len) |y| {
-            for (0..cells.len) |x| {
-                const j = TERM_SIZE - x - 1;
-                ds[0][x] = cells[y][x];
-                ds[1][x] = cells[y][j];
-            }
-        }
-
-        if (eql(u8, &ds[0], term) or eql(u8, &ds[0], mert) or
-            eql(u8, &ds[1], term) or eql(u8, &ds[1], mert)) c += 1;
-
-        return c;
-    }
+const Addr = struct {
+    x: usize,
+    y: usize,
 };
 
-const Data = struct {
+const Maze = struct {
     buffer: *[]const u8,
     line_len: usize,
     line_count: usize,
-    row: usize,
-    col: usize,
-    windows: List(Window),
+    term: []u8,
+    mert: []u8,
     alloc: Allocator,
 
-    fn init(alloc: Allocator, buffer: *[]const u8) Data {
-        return .{
-            .buffer = buffer,
-            .line_len = 0,
-            .line_count = 0,
-            .row = 0,
-            .col = 0,
-            .windows = List(Window).init(alloc),
-            .alloc = alloc,
-        };
+    pub fn init(self: *Maze, buffer: *[]const u8, alloc: Allocator) void {
+        self.buffer = buffer;
+        self.line_len = indexOf(u8, buffer.*, '\n').?;
+        self.line_count = buffer.len / (self.line_len + 1) + 1;
+        self.alloc = alloc;
+        self.display();
     }
 
-    fn deinit(self: *Data) void {
-        // self.alloc.free(self.buffer);
-        // for (self.windows.items) |*w| {
-        //     self.alloc.destroy(w);
-        // }
-        self.windows.deinit();
-    }
-
-    fn setup(self: *Data) void {
-        self.line_len = indexOf(u8, self.buffer.*, '\n').?;
-        var it = splitSca(u8, self.buffer.*, '\n');
-        while (it.next()) |_| {
-            self.line_count += 1;
-        }
-    }
-
-    fn buildWindowList(self: *Data) void {
-        const bx = self.line_len - TERM_SIZE + 1;
-        const by = self.line_count - TERM_SIZE + 1;
-
-        for (0..by) |y| {
-            for (0..bx) |x| {
-                const w = self.createWindow(x, y);
-                self.windows.append(w.*) catch unreachable;
-            }
-        }
+    pub fn display(self: *Maze) void {
         print("\n", .{});
+        for (0..self.line_count) |y| {
+            for (0..self.line_len) |x| {
+                print("{c}", .{self.get(x, y)});
+            }
+            print("\n", .{});
+        }
     }
 
-    fn count(self: *Data) i32 {
+    pub fn deinit(self: *Maze) void {
+        self.alloc.destroy(self);
+    }
+
+    pub fn count(self: *Maze) i32 {
+        return (self.findHorizontal() +
+            self.findVertical() +
+            self.findDiagonal());
+    }
+
+    pub fn index(self: *Maze, x: usize, y: usize) usize {
+        return (y * (self.line_len + 1) + x);
+    }
+
+    pub fn _get(self: *Maze, i: usize) u8 {
+        if (i >= self.buffer.len) {
+            print("ERR:{d} / {d}\n", .{ i, self.buffer.len });
+            unreachable;
+            // return 0;
+        }
+        return (self.buffer.*)[i];
+    }
+
+    pub fn get(self: *Maze, x: usize, y: usize) u8 {
+        return self._get(self.index(x, y));
+    }
+
+    pub fn findHorizontal(self: *Maze) i32 {
         var c: i32 = 0;
-        for (self.windows.items) |w| {
-            c += w.countMatches();
+        for (0..self.line_count) |y| {
+            for (0..self.line_len - TERM_SIZE) |x| {
+                var string: [TERM_SIZE]u8 = undefined;
+                for (0..TERM_SIZE) |j| {
+                    string[j] = self.get(x + j, y);
+                }
+                if (eql(u8, &string, TERM) or eql(u8, &string, MERT)) {
+                    c += 1;
+                    print("## [{d},{d}] HORZ | <{s}>\n", .{ x, y, string });
+                }
+            }
         }
         return c;
     }
 
-    fn createWindow(self: *Data, x: usize, y: usize) *Window {
-        var w = self.alloc.create(Window) catch unreachable;
-        w.init(self, x, y);
-        return w;
+    pub fn findVertical(self: *Maze) i32 {
+        var c: i32 = 0;
+        for (0..self.line_count) |y| {
+            for (0..self.line_len) |x| {
+                var string: [TERM_SIZE]u8 = undefined;
+
+                for (0..TERM_SIZE) |j| {
+                    const by = (y + j) % self.line_count;
+                    string[j] = self.get(x, by);
+                }
+                if (eql(u8, &string, TERM) or eql(u8, &string, MERT)) {
+                    print("++ [{d},{d}] VERT | <{s}>\n", .{ x, y, string });
+                    c += 1;
+                }
+            }
+        }
+        return c;
+    }
+
+    pub fn findDiagonal(self: *Maze) i32 {
+        var c: i32 = 0;
+        for (0..self.line_count - TERM_SIZE + 1) |y| {
+            for (0..self.line_len - TERM_SIZE + 1) |x| {
+                // print("[x:{},y:{d}]", .{ x, y });
+                var d1: Word = undefined;
+                var d2: Word = undefined;
+                for (0..TERM_SIZE) |j| {
+                    const bx = (x + j);
+                    const by = (y + j);
+                    const cx = (x + TERM_SIZE - 1 - j);
+
+                    d1[j] = self.get(bx, by);
+                    d2[j] = self.get(cx, by);
+                    // print("D2 [[{s}]] _ x:{},y:{} +j:{} ->(bx:{} by:{}) // -> (cx:{d} )\n", .{ d2, x, y, j, bx, by, cx });
+                }
+                if (eql(u8, &d1, TERM) or eql(u8, &d1, MERT)) {
+                    // print("DIAG: >>{s} :: [{d},{d}]\n", .{ d1, x, y });
+                    c += 1;
+                }
+                if (eql(u8, &d2, TERM) or eql(u8, &d2, MERT)) {
+                    // print("DIAG: {s}<< :: [{d},{d}]\n", .{ d2, x, y });
+                    c += 1;
+                }
+            }
+        }
+        return c;
     }
 };
 
-pub fn main() !void {
+pub fn main() void {
+    var m = gpa.create(Maze) catch unreachable;
+    defer m.deinit();
 
-    //part1();
+    var buf: []const u8 = (&raw_data[0..]).*;
+    m.init(&buf, gpa);
+    m.display();
+
+    print(">>  {d}\n\n", .{m.count()});
 }
 
-pub fn part1(alloc: Allocator) i32 {
-    var buffer: []const u8 = sample[0..];
-    var grid = Data.init(alloc, &buffer);
+pub fn stage1() void {
+    var m = gpa.create(Maze) catch unreachable;
+    defer m.deinit();
 
-    grid.setup();
-    grid.buildWindowList();
-    return grid.count();
+    var buf: []const u8 = (&raw_data[0..]).*;
+    m.init(&buf, gpa);
+    m.display();
+
+    print(">>  {d}\n\n", .{m.count()});
 }
 
-//
-// TEST
-//
 //
 //
 const test_alloc = std.testing.allocator;
-const SimpleSample = "1234567890\n!@#$%^&*()\nabcdefghij\n1234567890\nABCDEFGHIJ"[0..];
+// const SimpleSample = "1234567890\n!@#$%^&*()\nabcdefghij\n1234567890\nABCDEFGHIJ"[0..];
 
-test "sample data" {
-    var buffer: []const u8 = sample[0..];
-    var grid = Data.init(test_alloc, &buffer);
-    defer grid.deinit();
-    grid.setup();
-    const answer = part1(test_alloc);
-    try std.testing.expectEqual(18, answer);
+// test "sample" {
+//     var m = test_alloc.create(Maze) catch unreachable;
+//     defer m.deinit();
+
+//     var buf: []const u8 = (&sample[0..]).*;
+//     m.init(&buf, test_alloc);
+
+//     try expectEq(5, m.findHorizontal());
+//     try expectEq(3, m.findVertical());
+//     try expectEq(10, m.findDiagonal());
+//     try expectEq(18, m.count());
+// }
+
+test "diags" {
+    var m = test_alloc.create(Maze) catch unreachable;
+    defer m.deinit();
+
+    var buf: []const u8 = (&diags[0..]).*;
+    m.init(&buf, test_alloc);
+
+    try expectEq(4, m.findDiagonal());
 }
-
-test "Window - sanity" {
-    var buffer: []const u8 = SimpleSample;
-    var grid = Data.init(test_alloc, &buffer);
-    defer grid.deinit();
-    grid.setup();
-
-    try expectEq(10, grid.line_len);
-}
-
-test "Window - getChar" {
-    var buffer: []const u8 = sample[0..];
-    var grid = Data.init(test_alloc, &buffer);
-    defer grid.deinit();
-    grid.setup();
-
-    var window = grid.createWindow(0, 0);
-
-    for (0..4) |x| {
-        try expectEq('.', window.getChar(x, 0));
-    }
-    try expectEq('S', window.getChar(1, 1));
-    try expectEq('M', window.getChar(3, 1));
-
-    window = grid.createWindow(4, 4);
-    try expectEq('A', window.cells[0][0]);
-    try expectEq('M', window.cells[0][1]);
-    try expectEq('X', window.cells[0][2]);
-    try expectEq('.', window.cells[0][3]);
-    try expectEq('A', window.cells[3][3]);
-}
-
-test "collect Windows" {
-    var buffer: []const u8 = sample[0..];
-    var grid = Data.init(test_alloc, &buffer);
-    defer grid.deinit();
-    grid.setup();
-    try expectEq(grid.line_len, 10);
-    try expectEq(grid.line_count, 10);
-
-    grid.buildWindowList();
-
-    try expectEq(49, grid.windows.items.len);
-}
-
-test "count" {
-    var buffer: []const u8 = (
-        \\XMAX
-        \\MMMX
-        \\AAMM
-        \\SAMX
-    )[0..];
-
-    var grid = Data.init(test_alloc, &buffer);
-    defer grid.deinit();
-    grid.setup();
-
-    var w = grid.createWindow(0, 0);
-    // w.display();
-
-    try expectEq(1, Window.countHorz(w.cells));
-    try expectEq(1, Window.countVert(w.cells));
-    try expectEq(1, Window.countDiag(w.cells));
-    try expectEq(3, w.countMatches());
-}
-
-//
-//
-//
-//
-//
-//
 
 // Useful stdlib functions
 const tokenizeAny = std.mem.tokenizeAny;
@@ -306,7 +228,7 @@ const expectError = std.testing.expectError;
 // Run `zig build generate` to update.
 // Only unmodified days will be updated.
 
-var sample =
+var sample: []const u8 =
     \\....XXMAS.
     \\.SAMXMS...
     \\...S..A...
@@ -317,4 +239,14 @@ var sample =
     \\.A.A.A.A.A
     \\..M.M.M.MM
     \\.X.X.XMASX
+;
+
+var diags: []const u8 =
+    \\X..X.
+    \\.MM..
+    \\.AA..
+    \\S..S.
+    \\.AA..
+    \\.MM..
+    \\XXXXX
 ;
