@@ -10,205 +10,188 @@ const gpa = util.gpa;
 
 const data = @embedFile("data/day03.txt");
 
-const State = enum {
-    Mul,
-    FirstNumber,
-    SecondNumber,
-    Done,
-    Invalid,
+const StateNames = [_][]const u8{
+    "Ready",
+    "Set",
+    "Go",
 };
 
-const mul = "mul(";
-const do = "do()";
-const dont = "don't()";
-
-const Operation = struct {
-    state: State,
-    start_index: usize = 0,
-    index: usize = 0,
-    buffer: *[]const u8 = undefined,
-    operands: [2]u16 = .{ 0, 0 },
-
-    fn apply(self: *Operation) u64 {
-        return @as(u64, self.operands[0]) * @as(u64, self.operands[1]);
-    }
-
-    fn init(self: *Operation, buffer: *[]const u8, start_index: usize) void {
-        self.* = .{ .buffer = buffer, .index = start_index, .start_index = start_index, .state = .Mul };
-    }
-
-    fn next(self: *Operation) bool {
-        const i = self.index - self.start_index;
-        const ch = self.buffer.*[self.index];
-        // print("  state: {c} {d} {d} {s}\n", .{ ch, self.start_index, i, @tagName(self.state) });
-        switch (self.state) {
-            .Mul => {
-                if (ch != mul[i]) {
-                    self.state = .Invalid;
-                }
-
-                if (i == mul.len - 1)
-                    self.state = .FirstNumber;
-            },
-            .FirstNumber => {
-                switch (ch) {
-                    '0'...'9' => self.operands[0] = self.operands[0] * 10 + (ch - '0'),
-                    ',' => self.state = .SecondNumber,
-                    else => self.state = .Invalid,
-                }
-            },
-            .SecondNumber => {
-                switch (ch) {
-                    '0'...'9' => self.operands[1] = self.operands[1] * 10 + (ch - '0'),
-                    ')' => self.state = .Done,
-                    else => self.state = .Invalid,
-                }
-            },
-            .Done => unreachable,
-            .Invalid => unreachable,
-        }
-        // hack: don't skip the start of a valid seq after an invalid character
-        // and no infinite loops either
-        if (self.index - self.start_index == 0 or (ch != 'm' and ch != 'd'))
-            self.index += 1;
-
-        return self.state != .Done and self.state != .Invalid;
-    }
+const StateError = error{
+    GuardFailed,
+    InvalidTransition,
+    OnEnterFailed,
+    OnExitFailed,
+    StateNotFound,
 };
 
-const Parser = struct {
-    buffer: *[]const u8,
-    index: usize = 0,
-    total: u64 = 0,
-    skip: bool = false,
+const MAX_TRANSITIONS = 20;
+const MAX_STATES = 20;
 
-    fn init(self: *Parser, buffer: *[]const u8) void {
-        self.* = .{ .buffer = buffer, .index = 0, .total = 0 };
+const State = struct {
+    name: []const u8,
+    transitions: std.BoundedArray(*State, MAX_TRANSITIONS) = undefined,
+    // context: void,
+    guard: ?*const fn (*State) StateError!bool = null,
+    on_enter: ?*const fn (*State, *State) StateError!void = null,
+    on_exit: ?*const fn (*State, *State) StateError!void = null,
+
+    pub fn index(self: *State) u8 {
+        return @intFromEnum(self.tag);
     }
 
-    fn nextWordIs(self: *Parser, word: []const u8) bool {
-        if (self.index + word.len <= self.buffer.len) {
-            for (word, 0..) |ch, i| {
-                if (self.buffer.*[self.index + i] != ch) return false;
-            }
-            return true;
+    pub fn enter(self: *State, prev: *State) !void {
+        if (self.on_enter) |on_enter|
+            try on_enter(self, prev);
+    }
+
+    pub fn exit(self: *State, prev: *State) !void {
+        if (self.on_exit) |on_exit|
+            try on_exit(self, prev);
+    }
+
+    pub fn validTarget(self: *State, to: *State) bool {
+        for (self.transitions.constSlice()) |t| {
+            if (t == to) return true;
         }
         return false;
     }
 
-    fn process(self: *Parser) void {
-        while (self.index < self.buffer.len) {
-            if (self.skip) {
-                if (self.nextWordIs(do)) {
-                    self.skip = false;
-                    self.index += do.len - 1;
-                }
-                self.index += 1;
-                continue;
-            } else if (self.nextWordIs(dont)) {
-                self.skip = true;
-                self.index += dont.len - 1;
-                continue;
-            }
+    pub fn addTransition(self: *State, to: *State) !void {
+        try self.transitions.append(to);
+    }
 
-            var op = gpa.create(Operation) catch unreachable;
-            defer gpa.destroy(op);
+    pub fn transitionTo(self: *State, to: *State) !void {
+        if (!self.validTarget(to))
+            return StateError.InvalidTransition;
 
-            op.init(self.buffer, self.index);
-            while (op.next()) {}
-            if (op.state == .Done) {
-                self.total += op.apply();
-            }
-            self.index = op.index;
-        }
+        if (!self.guard(self))
+            return StateError.GuardFailed;
+    }
+
+    pub fn create(name: []const u8) State {
+        var state = State{
+            .name = name,
+        };
+        state.transitions = std.BoundedArray(*State, MAX_TRANSITIONS).init(1) catch unreachable;
+        return state;
     }
 };
 
-pub fn main() void {
-    var parser = gpa.create(Parser) catch unreachable;
-    defer gpa.destroy(parser);
-    var buffer: []const u8 = data;
-    parser.init(&buffer);
-    parser.process();
+const FiniteStateMachine = struct {
+    states: std.BoundedArray(State, MAX_STATES) = .{},
+    current: *State = undefined,
+    stack: List(*State) = undefined,
 
-    const stdout = std.io.getStdOut().writer();
-    stdout.print("{d}\n", .{parser.total}) catch unreachable;
+    pub fn define(self: *FiniteStateMachine, state: State) !*State {
+        const new_state_ptr = try self.states.addOne();
+        new_state_ptr.* = state;
+        return new_state_ptr;
+    }
+
+    pub fn init(self: *FiniteStateMachine, current: *State) void {
+        self.current = current;
+        self.stack = List(*State).init(gpa);
+    }
+
+    pub fn transitionValid(self: *FiniteStateMachine, to: *State) bool {
+        return self.current.validTarget(to);
+    }
+
+    pub fn transitionTo(self: *FiniteStateMachine, to: *State) !void {
+        if (!self.transitionValid(to))
+            return StateError.InvalidTransition;
+
+        if (to.guard) |guard|
+            if (!(try guard(to)))
+                return StateError.GuardFailed;
+
+        try self.current.exit(to);
+        const prev = self.current;
+        self.current = to;
+        try self.current.enter(prev);
+        self.stack.append(self.current) catch unreachable;
+    }
+
+    pub fn create(allocator: std.mem.Allocator) *FiniteStateMachine {
+        var fsm = allocator.create(FiniteStateMachine) catch unreachable;
+        fsm.states = std.BoundedArray(State, MAX_STATES).init(0) catch unreachable;
+        fsm.stack = List(*State).init(allocator);
+        fsm.current = undefined;
+        return fsm;
+    }
+
+    pub fn stateNamed(self: *FiniteStateMachine, name: []const u8) !*State {
+        for (self.states.constSlice()) |s| {
+            if (std.mem.eql(u8, s.name, name)) return s;
+        }
+        return error.StateNotFound;
+    }
+};
+
+test "fsm" {
+    var fsm = FiniteStateMachine.create(gpa);
+    defer gpa.destroy(fsm);
+
+    var state_ready = try fsm.define(State.create("Ready"));
+    var state_set = try fsm.define(State.create("Set"));
+    const state_go = try fsm.define(State.create("Go"));
+
+    try expectEq(3, fsm.states.len);
+
+    try expectEqStrings("Ready", fsm.states.get(0).name);
+    try expectEqStrings("Set", fsm.states.get(1).name);
+    try expectEqStrings("Go", fsm.states.get(2).name);
+
+    const sl = fsm.states.constSlice();
+    try expectEqStrings("Ready", sl[0].name);
+    try expectEqStrings("Set", sl[1].name);
+    try expectEqStrings("Go", sl[2].name);
+
+    try state_ready.addTransition(state_set);
+    try state_set.addTransition(state_go);
+
+    fsm.init(state_ready); // Ready
+    try expectEqStrings("Ready", fsm.current.name);
+    try fsm.transitionTo(state_set);
+    try expectEqStrings("Set", fsm.current.name);
+    try expectError(StateError.InvalidTransition, fsm.transitionTo(state_ready));
+    try fsm.transitionTo(state_go);
+    try expectEqStrings("Go", fsm.current.name);
 }
 
-// tests
-//
+test "fsm with guard" {
+    var fsm = FiniteStateMachine.create(gpa);
+    defer gpa.destroy(fsm);
 
-test "op OK" {
-    var op = std.testing.allocator.create(Operation) catch unreachable;
-    defer std.testing.allocator.destroy(op);
+    var state_parked = try fsm.define(State.create("Parked"));
+    var state_speeding = try fsm.define(State.create("Speeding"));
+    var state_ftl = try fsm.define(State.create("FTL"));
 
-    var buffer: []const u8 = "mul(13,24)";
-    op.init(&buffer, 0);
-    while (op.next()) {}
-    try std.testing.expectEqual(.Done, op.state);
-    try std.testing.expectEqual(13, op.operands[0]);
-    try std.testing.expectEqual(24, op.operands[1]);
-    try std.testing.expectEqual(312, op.apply());
+    try state_parked.addTransition(state_speeding);
+    try state_speeding.addTransition(state_ftl);
+    state_speeding.guard = yeah;
+    state_ftl.guard = nah;
+
+    fsm.init(state_parked);
+    try fsm.transitionTo(state_speeding);
+    try expectEqStrings("Speeding", fsm.current.name);
+    try expectError(StateError.GuardFailed, fsm.transitionTo(state_ftl));
 }
 
-test "op BAD" {
-    var op = std.testing.allocator.create(Operation) catch unreachable;
-    defer std.testing.allocator.destroy(op);
-
-    var buffer: []const u8 = "mul(13, 42)";
-    op.init(&buffer, 0);
-    while (op.next()) {}
-    try std.testing.expectEqual(.Invalid, op.state);
+fn yeah(state: *State) StateError!bool {
+    _ = state;
+    return true;
 }
 
-test "parser OK" {
-    var parser = std.testing.allocator.create(Parser) catch unreachable;
-    defer std.testing.allocator.destroy(parser);
-
-    var buffer: []const u8 = "mul(12,10)";
-    parser.init(&buffer);
-
-    try std.testing.expectEqual(0, parser.total);
-    parser.process();
-
-    try std.testing.expectEqual(120, parser.total);
+fn nah(state: *State) StateError!bool {
+    _ = state;
+    return error.GuardFailed;
 }
 
-test "parser sneaky bitch OK" {
-    var parser = std.testing.allocator.create(Parser) catch unreachable;
-    defer std.testing.allocator.destroy(parser);
-
-    var buffer: []const u8 = "mul(12mul(12,10)";
-    parser.init(&buffer);
-
-    try std.testing.expectEqual(0, parser.total);
-    parser.process();
-
-    try std.testing.expectEqual(120, parser.total);
-}
-
-test "word is" {
-    var parser = std.testing.allocator.create(Parser) catch unreachable;
-    defer std.testing.allocator.destroy(parser);
-
-    var buffer: []const u8 = "don't()";
-    parser.init(&buffer);
-    try std.testing.expect(parser.nextWordIs("don't"));
-}
-
-test "parser 2" {
-    var parser = std.testing.allocator.create(Parser) catch unreachable;
-    defer std.testing.allocator.destroy(parser);
-
-    var buffer: []const u8 = "xmul(2,4)&mul[3,7]!^don't()_mul(5,5)+mul(32,64](mul(11,8)undo()?mul(8,5))";
-    parser.init(&buffer);
-
-    try std.testing.expectEqual(0, parser.total);
-    parser.process();
-
-    try std.testing.expectEqual(48, parser.total);
-}
-
+const expect = std.testing.expect;
+const expectEq = std.testing.expectEqual;
+const expectEqStrings = std.testing.expectEqualStrings;
+const expectError = std.testing.expectError;
 // Useful stdlib functions
 const tokenizeAny = std.mem.tokenizeAny;
 const tokenizeSeq = std.mem.tokenizeSequence;
