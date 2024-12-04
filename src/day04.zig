@@ -26,18 +26,17 @@ const Window = struct {
     start_x: usize,
     start_y: usize,
 
-    pub fn init(data: *Data, x: usize, y: usize) Window {
-        var w = Window{
+    pub fn init(self: *Window, data: *Data, x: usize, y: usize) void {
+        self.* = .{
             .data = data,
             .start_x = x,
             .start_y = y,
         };
-        for (w.start_y..w.start_y + TERM_SIZE, 0..) |ry, iy| {
-            for (w.start_x..w.start_x + TERM_SIZE, 0..) |rx, ix| {
-                w.cells[iy][ix] = w.getChar(rx, ry);
+        for (self.start_y..self.start_y + TERM_SIZE, 0..) |ry, iy| {
+            for (self.start_x..self.start_x + TERM_SIZE, 0..) |rx, ix| {
+                self.cells[iy][ix] = self.getChar(rx, ry);
             }
         }
-        return w;
     }
 
     pub fn xyToIndex(self: *Window, x: usize, y: usize) usize {
@@ -109,6 +108,7 @@ const Data = struct {
     row: usize,
     col: usize,
     windows: List(Window),
+    alloc: Allocator,
 
     fn init(alloc: Allocator, buffer: *[]const u8) Data {
         return .{
@@ -118,7 +118,16 @@ const Data = struct {
             .row = 0,
             .col = 0,
             .windows = List(Window).init(alloc),
+            .alloc = alloc,
         };
+    }
+
+    fn deinit(self: *Data) void {
+        // self.alloc.free(self.buffer);
+        // for (self.windows.items) |*w| {
+        //     self.alloc.destroy(w);
+        // }
+        self.windows.deinit();
     }
 
     fn setup(self: *Data) void {
@@ -135,7 +144,8 @@ const Data = struct {
 
         for (0..by) |y| {
             for (0..bx) |x| {
-                self.windows.append(Window.init(self, x, y)) catch unreachable;
+                const w = self.createWindow(x, y);
+                self.windows.append(w.*) catch unreachable;
             }
         }
         print("\n", .{});
@@ -147,6 +157,12 @@ const Data = struct {
             c += w.countMatches();
         }
         return c;
+    }
+
+    fn createWindow(self: *Data, x: usize, y: usize) *Window {
+        var w = self.alloc.create(Window) catch unreachable;
+        w.init(self, x, y);
+        return w;
     }
 };
 
@@ -175,14 +191,16 @@ const SimpleSample = "1234567890\n!@#$%^&*()\nabcdefghij\n1234567890\nABCDEFGHIJ
 test "sample data" {
     var buffer: []const u8 = sample[0..];
     var grid = Data.init(test_alloc, &buffer);
+    defer grid.deinit();
     grid.setup();
     const answer = part1(test_alloc);
-    try std.testing.expectEqual(21, answer);
+    try std.testing.expectEqual(18, answer);
 }
 
 test "Window - sanity" {
     var buffer: []const u8 = SimpleSample;
     var grid = Data.init(test_alloc, &buffer);
+    defer grid.deinit();
     grid.setup();
 
     try expectEq(10, grid.line_len);
@@ -191,9 +209,10 @@ test "Window - sanity" {
 test "Window - getChar" {
     var buffer: []const u8 = sample[0..];
     var grid = Data.init(test_alloc, &buffer);
+    defer grid.deinit();
     grid.setup();
 
-    var window = Window.init(&grid, 0, 0);
+    var window = grid.createWindow(0, 0);
 
     for (0..4) |x| {
         try expectEq('.', window.getChar(x, 0));
@@ -201,7 +220,7 @@ test "Window - getChar" {
     try expectEq('S', window.getChar(1, 1));
     try expectEq('M', window.getChar(3, 1));
 
-    window = Window.init(&grid, 4, 4);
+    window = grid.createWindow(4, 4);
     try expectEq('A', window.cells[0][0]);
     try expectEq('M', window.cells[0][1]);
     try expectEq('X', window.cells[0][2]);
@@ -212,17 +231,12 @@ test "Window - getChar" {
 test "collect Windows" {
     var buffer: []const u8 = sample[0..];
     var grid = Data.init(test_alloc, &buffer);
+    defer grid.deinit();
     grid.setup();
     try expectEq(grid.line_len, 10);
     try expectEq(grid.line_count, 10);
 
-    // var list = List(Window).init(test_alloc);
-    // defer list.deinit();
-
     grid.buildWindowList();
-    // for (list.items) |*w| {
-    //     w.display();
-    // }
 
     try expectEq(49, grid.windows.items.len);
 }
@@ -236,9 +250,10 @@ test "count" {
     )[0..];
 
     var grid = Data.init(test_alloc, &buffer);
+    defer grid.deinit();
     grid.setup();
 
-    var w = Window.init(&grid, 0, 0);
+    var w = grid.createWindow(0, 0);
     // w.display();
 
     try expectEq(1, Window.countHorz(w.cells));
