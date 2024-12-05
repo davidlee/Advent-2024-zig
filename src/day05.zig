@@ -5,34 +5,15 @@ const splitSca = std.mem.splitScalar;
 const parseInt = std.fmt.parseInt;
 const print = std.debug.print;
 const assert = std.debug.assert;
+const indexOf = std.mem.indexOfScalar;
+const lastIndexOf = std.mem.lastIndexOfScalar;
 
 var data: []const u8 = @embedFile("data/day05.txt");
 var sample: []const u8 = @embedFile("data/day05_sample.txt");
 
-// const Map = std.AutoHashMap;
-// const StrMap = std.StringHashMap;
-// const BitSet = std.DynamicBitSet;
-// const BArray = std.BoundedArray;
-
-// Useful stdlib functions
-// const tokenizeAny = std.mem.tokenizeAny;
-// const tokenizeSeq = std.mem.tokenizeSequence;
-// const tokenizeSca = std.mem.tokenizeScalar;
-// const splitAny = std.mem.splitAny;
-// const splitSeq = std.mem.splitSequence;
-const indexOf = std.mem.indexOfScalar;
-// const indexOfAny = std.mem.indexOfAny;
-// const indexOfStr = std.mem.indexOfPosLinear;
-
-const lastIndexOf = std.mem.lastIndexOfScalar;
-// const lastIndexOfAny = std.mem.lastIndexOfAny;
-// const lastIndexOfStr = std.mem.lastIndexOfLinear;
-// const trim = std.mem.trim;
-// const sliceMin = std.mem.min;
-// const sliceMax = std.mem.max;
-// const eql = std.mem.eql;
-
-// const parseFloat = std.fmt.parseFloat;
+// ╘══════════════════════════════════════════════════════════════════════════════════════════════╛
+//  Main
+// ╒══════════════════════════════════════════════════════════════════════════════════════════════╕
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -43,10 +24,12 @@ pub fn main() !void {
     m.init(alloc, &data);
     defer m.deinit();
 
-    // m.sort();
-    // m.countValid();
     m.countFixed();
 }
+
+// ╘══════════════════════════════════════════════════════════════════════════════════════════════╛
+//  Types
+// ╒══════════════════════════════════════════════════════════════════════════════════════════════╕
 
 const Rule = struct {
     before: i32,
@@ -59,6 +42,11 @@ const Section = enum {
 };
 
 const Update = List(i32);
+
+// ╘══════════════════════════════════════════════════════════════════════════════════════════════╛
+//  Reader
+// ╒══════════════════════════════════════════════════════════════════════════════════════════════╕
+
 const Reader = struct {
     alloc: Allocator,
     buffer: *[]const u8,
@@ -74,13 +62,11 @@ const Reader = struct {
     }
 
     pub fn deinit(self: *Reader) void {
-        // First deinit all the Update ArrayLists stored in updates
         for (self.updates.items) |update| {
             update.deinit();
         }
         self.updates.deinit();
         self.rules.deinit();
-        // self.alloc.destroy(self);
     }
 
     pub fn load(self: *Reader) void {
@@ -115,6 +101,10 @@ const Reader = struct {
     }
 };
 
+// ╘══════════════════════════════════════════════════════════════════════════════════════════════╛
+//  Validator
+// ╒══════════════════════════════════════════════════════════════════════════════════════════════╕
+
 const Validator = struct {
     reader: *Reader = undefined,
     alloc: Allocator,
@@ -135,21 +125,12 @@ const Validator = struct {
     pub fn check(self: *Validator, update: *const Update) bool {
         for (self.reader.rules.items) |rule| {
             if (!Validator.isSatisfied(update, &rule)) {
-                for (update.items) |item| {
-                    print("{d} ", .{item});
-                }
-                print("\n", .{});
-                print("Failed to satisfy rule {d} | {d}\n", .{
-                    rule.before,
-                    rule.after,
-                });
                 return false;
             }
         }
         return true;
     }
 
-    /// Fix the update by swapping the before and after values of each rule not satisfied
     pub fn fix(self: *Validator, update: *Update) void {
         for (self.reader.rules.items) |rule| {
             if (!Validator.isSatisfied(update, &rule)) {
@@ -184,7 +165,6 @@ const Validator = struct {
                 count += update.items[i];
             }
         }
-        print("{d}\n", .{count});
     }
 
     pub fn countFixed(self: *Validator) void {
@@ -192,23 +172,12 @@ const Validator = struct {
         for (self.reader.updates.items) |*update| {
             if (self.check(update)) continue;
             while (!self.check(update)) {
-                print("fixing,\n", .{});
-                for (update.items) |item| {
-                    print("{d} ", .{item});
-                }
-                print("\n", .{});
                 self.fix(update);
             }
             if (self.check(update)) {
                 const i = @divFloor(update.items.len, 2);
                 count += update.items[i];
-            } else {
-                print("Failed to fix update\n", .{});
-                for (update.items) |item| {
-                    print("{d} ", .{item});
-                }
-                print("\n", .{});
-            }
+            } else unreachable;
         }
         print("{d}\n", .{count});
     }
