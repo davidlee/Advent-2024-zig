@@ -6,7 +6,7 @@ const parseInt = std.fmt.parseInt;
 const print = std.debug.print;
 const assert = std.debug.assert;
 const indexOf = std.mem.indexOfScalar;
-const lastIndexOf = std.mem.lastIndexOfScalar;
+const lastIndexOf = std.mem.ltastIndexOfScalar;
 
 var data: []const u8 = @embedFile("data/day05.txt");
 var sample: []const u8 = @embedFile("data/day05_sample.txt");
